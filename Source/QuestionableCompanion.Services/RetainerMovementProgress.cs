@@ -1,0 +1,3 @@
+namespace QuestionableCompanion.Services;
+
+internal sealed record RetainerMovementProgress(bool CrossingInitiated, RetainerMovementProgressDecision Decision);
