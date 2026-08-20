@@ -923,18 +923,30 @@ public class QuestRotationExecutionService : IDisposable
 
 	internal void EndAutomaticClassUnlockInterruption(string character, bool resume)
 	{
-		if (automaticClassUnlockInterruptionActive)
+		if (!automaticClassUnlockInterruptionActive)
 		{
-			automaticClassUnlockInterruptionActive = false;
-			if (resume && isRotationActive && string.Equals(currentState.CurrentCharacter, character, StringComparison.OrdinalIgnoreCase))
+			return;
+		}
+		automaticClassUnlockInterruptionActive = false;
+		if (resume && isRotationActive && string.Equals(currentState.CurrentCharacter, character, StringComparison.OrdinalIgnoreCase))
+		{
+			ResetQuestionableStartRetry();
+			RotationHandoffCheckpoint matchingRotationHandoff = GetMatchingRotationHandoff(character);
+			if (matchingRotationHandoff != null)
 			{
-				ResetQuestionableStartRetry();
-				currentState.Phase = RotationPhase.WaitingForQuestStart;
-				currentState.HasQuestBeenAccepted = false;
-				currentState.PhaseStartTime = DateTime.Now;
-				TryIssueQuestionableStart("after automatic Class Unlock");
-				log.Information($"[QuestRotation] Resumed {character} toward Stop Point {currentState.CurrentStopQuestId} after Class Unlock.");
+				matchingRotationHandoff.RecoveryStage = RotationHandoffRecoveryStage.CombatJobPrepared;
+				matchingRotationHandoff.QuestStartCommandIssuedUtc = DateTime.MinValue;
+				matchingRotationHandoff.UpdatedUtc = DateTime.UtcNow;
+				configuration.Save();
 			}
+			currentState.Phase = RotationPhase.WaitingForQuestStart;
+			currentState.HasQuestBeenAccepted = false;
+			currentState.PhaseStartTime = DateTime.Now;
+			if (!TryIssueQuestionableStart("after automatic Class Unlock completion"))
+			{
+				log.Warning("[QuestRotation] The explicit /qst start after automatic Class Unlock was not accepted.");
+			}
+			log.Information($"[QuestRotation] Resumed {character} toward Stop Point {currentState.CurrentStopQuestId} after Class Unlock.");
 		}
 	}
 

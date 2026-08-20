@@ -3,4 +3,4 @@ using QuestionableCompanion.Models;
 
 namespace QuestionableCompanion.Services;
 
-internal sealed record AutoRetainerReflectionRequest(ulong ContentId, string CharacterKey, RetainerType Type, IReadOnlyList<AutoRetainerExpectedRetainer> Retainers, bool AttachStarterPlan, bool EnableCharacter, bool EnableRetainers);
+internal sealed record AutoRetainerReflectionRequest(ulong ContentId, string CharacterKey, RetainerType Type, IReadOnlyList<AutoRetainerExpectedRetainer> Retainers, IReadOnlyList<AutoRetainerExpectedRetainer> BaselineRetainers, bool AttachStarterPlan, bool EnableCharacter, bool EnableRetainers);

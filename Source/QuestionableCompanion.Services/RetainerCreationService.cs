@@ -344,6 +344,7 @@ public sealed class RetainerCreationService : IDisposable
 			{
 				unavailableNames.UnionWith(value4.ReservedNames);
 				unavailableNames.UnionWith(value4.Retainers.Select((TrackedRetainerCheckpoint retainer) => retainer.Name));
+				unavailableNames.UnionWith(value4.BaselineRetainers.Select((BaselineRetainerCheckpoint retainer) => retainer.Name));
 			}
 			Dictionary<ulong, RetainerSetupTarget> targetsByContentId = targets.ToDictionary((RetainerSetupTarget retainerSetupTarget) => retainerSetupTarget.ContentId);
 			while (RequireValidHandoff().RemainingQueue.Count > 0)
@@ -632,16 +633,26 @@ public sealed class RetainerCreationService : IDisposable
 		ValidateNativeRosterAtVocate(vocateEntitlements, nativeEvidence);
 		string pendingHireName = GetPendingHireName(target.ContentId);
 		ReconcileReservedHires(checkpoint, target.Choice, nativeEvidence.Roster, pendingHireName);
-		ValidateOwnedRoster(checkpoint, nativeEvidence.Roster);
+		bool capturedBaselineNow = CaptureOrValidateBaselineRoster(checkpoint, nativeEvidence.Roster);
 		unavailableNames.UnionWith(nativeEvidence.Roster.Select((LiveRetainerInfo retainer) => retainer.Name));
 		await ClearPendingHireAsync(target.ContentId);
-		RetainerNativeCapacityPlan retainerNativeCapacityPlan = RetainerNativeCapacityLogic.Plan(vocateEntitlements.CurrentCount, vocateEntitlements.MaximumCount, nativeEvidence.Snapshot, nativeEvidence.Roster.Count, checkpoint.Retainers.Count, checkpoint.IntendedRetainerCount);
+		if (capturedBaselineNow && checkpoint.BaselineRetainers.Count > 0 && checkpoint.IntendedRetainerCount > 0)
+		{
+			int intendedRetainerCount = checkpoint.IntendedRetainerCount;
+			int val = Math.Max(checkpoint.Retainers.Count, nativeEvidence.Snapshot.MaximumCount - checkpoint.BaselineRetainers.Count);
+			checkpoint.IntendedRetainerCount = Math.Min(intendedRetainerCount, val);
+			if (checkpoint.IntendedRetainerCount != intendedRetainerCount)
+			{
+				log.Information($"[RetainerSetup] Migrated legacy total-retainer intent for {target.CharacterKey} from {intendedRetainerCount} to {checkpoint.IntendedRetainerCount} Companion-owned retainers.");
+			}
+		}
+		RetainerNativeCapacityPlan retainerNativeCapacityPlan = RetainerNativeCapacityLogic.Plan(vocateEntitlements.CurrentCount, vocateEntitlements.MaximumCount, nativeEvidence.Snapshot, nativeEvidence.Roster.Count, checkpoint.BaselineRetainers.Count, checkpoint.Retainers.Count, checkpoint.IntendedRetainerCount);
 		if (!retainerNativeCapacityPlan.IsValid)
 		{
 			throw new RetainerTerminalCharacterException(retainerNativeCapacityPlan.Error);
 		}
 		checkpoint.IntendedRetainerCount = retainerNativeCapacityPlan.IntendedCount;
-		log.Information($"[RetainerSetup] Stable native capacity for {target.CharacterKey}: {nativeEvidence.Snapshot.CurrentCount}/{nativeEvidence.Snapshot.MaximumCount}; QST owns {checkpoint.Retainers.Count}, so {retainerNativeCapacityPlan.RemainingHires} hire(s) remain.");
+		log.Information($"[RetainerSetup] Stable native capacity for {target.CharacterKey}: {nativeEvidence.Snapshot.CurrentCount}/{nativeEvidence.Snapshot.MaximumCount}; baseline {checkpoint.BaselineRetainers.Count}, QST owns {checkpoint.Retainers.Count}, so {retainerNativeCapacityPlan.RemainingHires} hire(s) remain.");
 		checkpoint.PendingCheckpoint = null;
 		RefreshLastVerifiedCheckpoint(checkpoint);
 		await PersistAsync();
@@ -1689,17 +1700,22 @@ public sealed class RetainerCreationService : IDisposable
 	private void ReconcileReservedHires(CharacterRetainerSetupCheckpoint checkpoint, CharacterRetainerSetupChoice frozenChoice, IReadOnlyList<LiveRetainerInfo> live, string pendingHireName)
 	{
 		List<string> reservedNames = (string.IsNullOrWhiteSpace(pendingHireName) ? checkpoint.ReservedNames : checkpoint.ReservedNames.Where((string name) => string.Equals(name, pendingHireName, StringComparison.OrdinalIgnoreCase)).ToList());
-		RetainerReservedHireAdoptionResult result = RetainerReservedHireAdoptionLogic.Decide(checkpoint.Retainers.Select((TrackedRetainerCheckpoint retainer) => new RetainerRosterIdentity(retainer.RetainerId, retainer.Name)).ToArray(), reservedNames, live.Select((LiveRetainerInfo retainer) => new RetainerRosterIdentity(retainer.RetainerId, retainer.Name)).ToArray());
-		if (result.Decision == RetainerReservedHireAdoptionDecision.Conflict)
+		for (int num = 0; num <= live.Count; num++)
 		{
-			throw new RetainerTerminalCharacterException(result.Error);
-		}
-		if (result.Decision == RetainerReservedHireAdoptionDecision.Adopt && !(result.Retainer == null))
-		{
+			RetainerReservedHireAdoptionResult result = RetainerReservedHireAdoptionLogic.Decide(checkpoint.Retainers.Select((TrackedRetainerCheckpoint retainer) => new RetainerRosterIdentity(retainer.RetainerId, retainer.Name)).ToArray(), reservedNames, live.Select((LiveRetainerInfo retainer) => new RetainerRosterIdentity(retainer.RetainerId, retainer.Name)).ToArray());
+			if (result.Decision == RetainerReservedHireAdoptionDecision.Conflict)
+			{
+				throw new RetainerTerminalCharacterException(result.Error);
+			}
+			if (result.Decision != RetainerReservedHireAdoptionDecision.Adopt || result.Retainer == null)
+			{
+				return;
+			}
 			LiveRetainerInfo liveRetainerInfo = live.Single((LiveRetainerInfo retainer) => retainer.RetainerId == result.Retainer.RetainerId && string.Equals(retainer.Name, result.Retainer.Name, StringComparison.OrdinalIgnoreCase));
 			TrackAcceptedRetainer(checkpoint, frozenChoice, liveRetainerInfo);
 			log.Information($"[RetainerSetup] Adopted QST-reserved native retainer {liveRetainerInfo.Name} ({liveRetainerInfo.RetainerId}) at work unit 1 " + (string.IsNullOrWhiteSpace(pendingHireName) ? "after the pending hire handoff had cleared." : "from the persisted pending hire handoff."));
 		}
+		throw new RetainerTerminalCharacterException("Reserved-retainer reconciliation did not converge within the live roster size.");
 	}
 
 	private static void TrackAcceptedRetainer(CharacterRetainerSetupCheckpoint checkpoint, CharacterRetainerSetupChoice frozenChoice, LiveRetainerInfo accepted)
@@ -1727,25 +1743,59 @@ public sealed class RetainerCreationService : IDisposable
 		}
 	}
 
-	private static void ValidateOwnedRoster(CharacterRetainerSetupCheckpoint checkpoint, IReadOnlyList<LiveRetainerInfo> live)
+	private bool CaptureOrValidateBaselineRoster(CharacterRetainerSetupCheckpoint checkpoint, IReadOnlyList<LiveRetainerInfo> live)
 	{
-		if (checkpoint.Retainers.Count == 0 && live.Count > 0)
+		IGrouping<ulong, LiveRetainerInfo> grouping = (from retainer in live
+			group retainer by retainer.RetainerId).FirstOrDefault((IGrouping<ulong, LiveRetainerInfo> group) => group.Count() > 1);
+		if (grouping != null)
 		{
-			throw new InvalidOperationException("The native live roster contains untracked retainers; no retainers will be modified.");
+			throw new RetainerTerminalCharacterException($"Native roster contains duplicate retainer ID {grouping.Key}.");
+		}
+		IGrouping<string, LiveRetainerInfo> grouping2 = live.GroupBy<LiveRetainerInfo, string>((LiveRetainerInfo retainer) => retainer.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault((IGrouping<string, LiveRetainerInfo> group) => group.Count() > 1);
+		if (grouping2 != null)
+		{
+			throw new RetainerTerminalCharacterException("Native roster contains duplicate retainer name " + grouping2.Key + ".");
 		}
 		foreach (TrackedRetainerCheckpoint expected in checkpoint.Retainers)
 		{
 			if (!live.Any((LiveRetainerInfo actual) => actual.RetainerId == expected.RetainerId && string.Equals(actual.Name, expected.Name, StringComparison.OrdinalIgnoreCase)))
 			{
-				throw new InvalidOperationException($"Tracked retainer {expected.Name} ({expected.RetainerId}) is missing or mismatched.");
+				throw new RetainerTerminalCharacterException($"Companion-owned retainer {expected.Name} ({expected.RetainerId}) is missing or mismatched.");
 			}
 		}
 		HashSet<ulong> trackedIds = checkpoint.Retainers.Select((TrackedRetainerCheckpoint retainer) => retainer.RetainerId).ToHashSet();
-		LiveRetainerInfo liveRetainerInfo = live.FirstOrDefault((LiveRetainerInfo actual) => !trackedIds.Contains(actual.RetainerId));
+		HashSet<string> hashSet = checkpoint.Retainers.Select((TrackedRetainerCheckpoint retainer) => retainer.Name).ToHashSet<string>(StringComparer.OrdinalIgnoreCase);
+		if (!checkpoint.BaselineRosterCaptured)
+		{
+			checkpoint.BaselineRetainers = (from retainer in live
+				where !trackedIds.Contains(retainer.RetainerId)
+				select new BaselineRetainerCheckpoint
+				{
+					RetainerId = retainer.RetainerId,
+					Name = retainer.Name
+				}).ToList();
+			checkpoint.BaselineRosterCaptured = true;
+			log.Information($"[RetainerSetup] Captured {checkpoint.BaselineRetainers.Count} pre-existing baseline retainer(s) for {checkpoint.CharacterKey}; they will never be modified by this setup run.");
+			return true;
+		}
+		foreach (BaselineRetainerCheckpoint baseline in checkpoint.BaselineRetainers)
+		{
+			if (trackedIds.Contains(baseline.RetainerId) || hashSet.Contains(baseline.Name))
+			{
+				throw new RetainerTerminalCharacterException($"Baseline retainer {baseline.Name} ({baseline.RetainerId}) overlaps a Companion-owned retainer.");
+			}
+			if (!live.Any((LiveRetainerInfo actual) => actual.RetainerId == baseline.RetainerId && string.Equals(actual.Name, baseline.Name, StringComparison.OrdinalIgnoreCase)))
+			{
+				throw new RetainerTerminalCharacterException($"Baseline retainer {baseline.Name} ({baseline.RetainerId}) is missing or mismatched.");
+			}
+		}
+		HashSet<ulong> knownIds = trackedIds.Concat(checkpoint.BaselineRetainers.Select((BaselineRetainerCheckpoint retainer) => retainer.RetainerId)).ToHashSet();
+		LiveRetainerInfo liveRetainerInfo = live.FirstOrDefault((LiveRetainerInfo actual) => !knownIds.Contains(actual.RetainerId));
 		if (liveRetainerInfo != null)
 		{
-			throw new RetainerTerminalCharacterException($"Live retainer {liveRetainerInfo.Name} ({liveRetainerInfo.RetainerId}) is not owned by this Companion checkpoint.");
+			throw new RetainerTerminalCharacterException($"Live retainer {liveRetainerInfo.Name} ({liveRetainerInfo.RetainerId}) is neither part of the frozen baseline " + "nor owned by this Companion checkpoint.");
 		}
+		return false;
 	}
 
 	private bool TryCreateInitialNamingSessions(RetainerSetupConfiguration settings, ISet<string> unavailableNames, out RetainerNamingSession original, out RetainerNamingSession reversed)
@@ -1827,7 +1877,7 @@ public sealed class RetainerCreationService : IDisposable
 
 	private static AutoRetainerReflectionRequest CreateAutoRetainerReflectionRequest(RetainerSetupTarget target, CharacterRetainerSetupCheckpoint checkpoint, bool attachStarterPlan, bool enableCharacter, bool enableRetainers)
 	{
-		return new AutoRetainerReflectionRequest(target.ContentId, target.CharacterKey, checkpoint.LockedChoice.Type, checkpoint.Retainers.Select((TrackedRetainerCheckpoint retainer) => new AutoRetainerExpectedRetainer(retainer.RetainerId, retainer.Name)).ToArray(), attachStarterPlan, enableCharacter, enableRetainers);
+		return new AutoRetainerReflectionRequest(target.ContentId, target.CharacterKey, checkpoint.LockedChoice.Type, checkpoint.Retainers.Select((TrackedRetainerCheckpoint retainer) => new AutoRetainerExpectedRetainer(retainer.RetainerId, retainer.Name)).ToArray(), checkpoint.BaselineRetainers.Select((BaselineRetainerCheckpoint retainer) => new AutoRetainerExpectedRetainer(retainer.RetainerId, retainer.Name)).ToArray(), attachStarterPlan, enableCharacter, enableRetainers);
 	}
 
 	private static AutoRetainerMutationResult VerifySnapshotFirstVentures(AutoRetainerCharacterSnapshot snapshot, IReadOnlyCollection<TrackedRetainerCheckpoint> expectedRetainers, long nowUnixSeconds)

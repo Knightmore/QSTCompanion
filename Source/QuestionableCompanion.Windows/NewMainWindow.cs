@@ -570,7 +570,7 @@ public class NewMainWindow : Window, IDisposable
 					}
 					if (ImGui.IsItemHovered())
 					{
-						ImGui.SetTooltip("If the character's current job is at this level or higher, the Stop Point rotation stays on that job.\nThe selected new job is still unlocked, equipped with recommended gear, and saved as a gearset.");
+						ImGui.SetTooltip("If the character's current job is at this level or higher, the Stop Point rotation stays on that job.\nThe selected new job is unlocked, but Companion does not equip it or create/update its gearset.");
 					}
 					if (v2)
 					{
@@ -4053,12 +4053,12 @@ public class NewMainWindow : Window, IDisposable
 		ImGui.PushStyleColor(ImGuiCol.Text, colorPrimary);
 		ImGui.TextUnformatted("Retainer Setup");
 		ImGui.PopStyleColor();
-		ImGui.TextWrapped("XADB's saved zero identifies new targets. Once a batch starts, Vocate entitlement and open slots come directly from the game's native RetainerManager, matching Henchman's flow; existing partial setups resume only exact ContentId/retainer checkpoints owned by Companion.");
+		ImGui.TextWrapped("Selected characters may already have retainers. Once a batch starts, Vocate entitlement and the exact live roster come directly from the game's native RetainerManager. Existing retainers are frozen as a read-only baseline; Companion fills and configures only the remaining slots it creates itself.");
 		ImGuiHelpers.ScaledDummy(6f);
 		if (!xadbIpc.IsInstalled)
 		{
 			ImGui.PushStyleColor(ImGuiCol.Text, colorAccent);
-			ImGui.TextWrapped("XA Database must be installed to discover a new saved-zero target. It is not required by an already-started batch or its reload recovery.");
+			ImGui.TextWrapped("XA Database supplies the offline roster preview. Every consequential setup run still validates the exact live roster before creating anything.");
 			ImGui.PopStyleColor();
 		}
 		ImGui.BeginDisabled(retainerCreationService.Snapshot.IsRunning || retainerCreationService.HasPendingRecovery);
@@ -4159,7 +4159,7 @@ public class NewMainWindow : Window, IDisposable
 		string[] array = registeredCharacters.Where((string character) => characterSelection.GetValueOrDefault(character)).OrderBy<string, string>((string character) => character, StringComparer.OrdinalIgnoreCase).ToArray();
 		if (array.Length == 0)
 		{
-			ImGui.TextWrapped("Select characters on the Characters tab. New rows require confirmed zero; every existing non-complete checkpoint can be revalidated.");
+			ImGui.TextWrapped("Select characters on the Characters tab. Existing retainers are preserved and only open slots are configured.");
 			return;
 		}
 		DrawRetainerBulkJobControls(array);
@@ -4229,10 +4229,10 @@ public class NewMainWindow : Window, IDisposable
 				ImGui.SetTooltip(xadbRetainerSnapshot.FailureReason);
 			}
 			ImGui.TableNextColumn();
-			text2 = ((value != null) ? (flag ? $"{value.ProgressPercent}% - Revalidation required" : $"{value.ProgressPercent}% - {value.State}") : (xadbRetainerSnapshot.Status switch
+			text2 = ((value != null) ? (flag ? $"{value.ProgressPercent}% - Revalidation required" : ($"{value.ProgressPercent}% - {value.State}" + (value.BaselineRosterCaptured ? $" ({value.BaselineRetainers.Count} existing preserved)" : string.Empty))) : (xadbRetainerSnapshot.Status switch
 			{
 				XadbRetainerRosterStatus.ConfirmedZero => "Not started", 
-				XadbRetainerRosterStatus.Populated => "Existing / untracked", 
+				XadbRetainerRosterStatus.Populated => "Ready - existing preserved", 
 				_ => "Unknown", 
 			}));
 			ImGui.TextUnformatted(text2);
@@ -4436,14 +4436,14 @@ public class NewMainWindow : Window, IDisposable
 		ImGui.EndDisabled();
 		if (list.Count == 0)
 		{
-			ImGui.TextWrapped("No selected character is confirmed empty or has an existing non-complete checkpoint to revalidate.");
+			ImGui.TextWrapped("No selected character has an exact usable roster identity or a non-complete checkpoint to revalidate.");
 		}
 		bool open = true;
 		if (!ImGui.BeginPopupModal("Confirm retainer creation##Retainers", ref open, ImGuiWindowFlags.AlwaysAutoResize))
 		{
 			return;
 		}
-		ImGui.TextWrapped("This is a consequential live action. Companion will relog the explicitly selected eligible characters, fill every available retainer entitlement, and stop at the configured checkpoint. MultiMode and the manual AutoRetainer scheduler will remain off afterward.");
+		ImGui.TextWrapped("This is a consequential live action. Companion will relog the explicitly selected eligible characters, preserve every pre-existing retainer, fill the remaining available entitlement, and configure only the newly created retainers before stopping at the configured checkpoint. MultiMode and the manual AutoRetainer scheduler will remain off afterward.");
 		ImGui.Spacing();
 		if (ImGui.Button("Create/configure retainers"))
 		{

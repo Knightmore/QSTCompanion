@@ -217,6 +217,11 @@ public class CombatDutyDetectionService : IDisposable
 				}
 			}
 		}
+		if (combatCommandsActive && !CanExecuteCombatAutomation())
+		{
+			log.Information("[CombatDuty] Current role/context no longer permits normal combat handling; disabling combat commands");
+			DisableCombatCommands();
+		}
 		if (isRotationActive && IsInDuty && !isInAutoDutyDungeon && !hasCombatCommandsForDuty && dutyEntryTime != DateTime.MinValue)
 		{
 			if (currentQuestId == 4591)
@@ -279,6 +284,9 @@ public class CombatDutyDetectionService : IDisposable
 				break;
 			case MultiClientRole.Quester:
 				log.Debug("[CombatDuty] Combat blocked: Quester outside Solo Duty (Let D.Automation handle invalid content)");
+				break;
+			case MultiClientRole.Helper:
+				log.Debug("[CombatDuty] Combat blocked: Helper automation does not own normal combat handling");
 				break;
 			}
 			return;
@@ -548,7 +556,7 @@ public class CombatDutyDetectionService : IDisposable
 		case MultiClientRole.None:
 			return !IsInDuty;
 		case MultiClientRole.Helper:
-			return true;
+			return false;
 		case MultiClientRole.Quester:
 			if (!IsInDuty)
 			{

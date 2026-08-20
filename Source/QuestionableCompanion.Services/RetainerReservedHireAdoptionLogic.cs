@@ -45,17 +45,12 @@ internal static class RetainerReservedHireAdoptionLogic
 		{
 			return new RetainerReservedHireAdoptionResult(RetainerReservedHireAdoptionDecision.None, null, string.Empty);
 		}
-		RetainerRosterIdentity[] reservedMatches = array.Where((RetainerRosterIdentity retainer) => reservedNames.Contains<string>(retainer.Name, StringComparer.OrdinalIgnoreCase)).ToArray();
-		if (reservedMatches.Length > 1)
+		RetainerRosterIdentity[] array2 = array.Where((RetainerRosterIdentity retainer) => reservedNames.Contains<string>(retainer.Name, StringComparer.OrdinalIgnoreCase)).ToArray();
+		if (array2.Length != 0)
 		{
-			return Conflict("Multiple untracked native retainers match persisted QST reservations; ownership is ambiguous.");
+			return new RetainerReservedHireAdoptionResult(RetainerReservedHireAdoptionDecision.Adopt, array2.OrderBy<RetainerRosterIdentity, string>((RetainerRosterIdentity retainer) => retainer.Name, StringComparer.OrdinalIgnoreCase).ThenBy((RetainerRosterIdentity retainer) => retainer.RetainerId).First(), string.Empty);
 		}
-		if (reservedMatches.Length == 1 && array.Length == 1)
-		{
-			return new RetainerReservedHireAdoptionResult(RetainerReservedHireAdoptionDecision.Adopt, reservedMatches[0], string.Empty);
-		}
-		RetainerRosterIdentity retainerRosterIdentity3 = array.First((RetainerRosterIdentity retainer) => !reservedMatches.Contains(retainer));
-		return Conflict($"Live retainer {retainerRosterIdentity3.Name} ({retainerRosterIdentity3.RetainerId}) is not owned by this Companion checkpoint.");
+		return new RetainerReservedHireAdoptionResult(RetainerReservedHireAdoptionDecision.None, null, string.Empty);
 	}
 
 	private static RetainerReservedHireAdoptionResult Conflict(string error)

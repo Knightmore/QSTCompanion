@@ -308,9 +308,14 @@ public sealed class ClassUnlockRotationService : IDisposable
 				throw new InvalidOperationException("The current combat gearset could not be saved.");
 			}
 			IReadOnlyList<int> levels = await ReadLiveClassJobLevelsAsync(token);
-			IReadOnlyList<ClassUnlockTargetDefinition> targets = GetReadyAutomaticTargets(levels, await framework.RunOnFrameworkThread(() => clientState.TerritoryType));
+			IReadOnlyList<ClassUnlockTargetDefinition> readyAutomaticTargets = GetReadyAutomaticTargets(levels, await framework.RunOnFrameworkThread(() => clientState.TerritoryType));
 			Dictionary<uint, int> newlyUnlockedGearsets = new Dictionary<uint, int>();
-			foreach (ClassUnlockTargetDefinition target in targets)
+			uint switchTargetId = ResolveConfiguredSwitchTarget(readyAutomaticTargets.Select((ClassUnlockTargetDefinition classUnlockTargetDefinition2) => classUnlockTargetDefinition2.ClassJobId));
+			int currentClassLevel;
+			int keepCurrentThreshold;
+			bool keepCurrentClass = ShouldKeepCurrentClassAtConfiguredLevel(readyAutomaticTargets, levels, anchor.ClassJobId, out currentClassLevel, out keepCurrentThreshold);
+			log.Information($"[ClassUnlock] Continuation decision for {character}: anchorJob={anchor.ClassJobId}, anchorLevel={currentClassLevel}, switchTarget={switchTargetId}, keepThreshold={keepCurrentThreshold}, keepCurrent={keepCurrentClass}.");
+			foreach (ClassUnlockTargetDefinition target in readyAutomaticTargets)
 			{
 				token.ThrowIfCancellationRequested();
 				if (!questRotation.IsRotationActive)
@@ -322,16 +327,26 @@ public sealed class ClassUnlockRotationService : IDisposable
 					AddResult(character, target, ClassUnlockResultKind.Failed, "The saved combat gearset could not be restored before this unlock.", results);
 					continue;
 				}
-				(bool, int) tuple = await RunAutomaticTargetAsync(character, target, results, token);
-				if (tuple.Item1 && tuple.Item2 >= 0)
+				(bool Unlocked, int GearsetId) outcome = await RunAutomaticTargetAsync(character, target, !keepCurrentClass, results, token);
+				if (outcome.Unlocked && outcome.GearsetId >= 0)
 				{
-					newlyUnlockedGearsets[target.ClassJobId] = tuple.Item2;
+					newlyUnlockedGearsets[target.ClassJobId] = outcome.GearsetId;
+				}
+				bool flag = keepCurrentClass;
+				if (flag)
+				{
+					flag = !(await RestoreCombatAnchorForContinuationAsync(character, anchor, token));
+				}
+				if (flag)
+				{
+					resumeRotation = false;
+					throw new InvalidOperationException("The unlock quest changed the current job and the previous combat job could not be restored; the Stop Point rotation will remain paused.");
+				}
+				if (keepCurrentClass && outcome.Unlocked)
+				{
+					await ProcessUnlockRewardItemsAsync(target, token);
 				}
 			}
-			uint switchTargetId = ResolveConfiguredSwitchTarget(targets.Select((ClassUnlockTargetDefinition classUnlockTargetDefinition2) => classUnlockTargetDefinition2.ClassJobId));
-			int currentClassLevel;
-			int keepCurrentThreshold;
-			bool keepCurrentClass = ShouldKeepCurrentClassAtConfiguredLevel(targets, levels, anchor.ClassJobId, out currentClassLevel, out keepCurrentThreshold);
 			int switchGearsetId = -1;
 			if (switchTargetId != 0 && !keepCurrentClass && !newlyUnlockedGearsets.TryGetValue(switchTargetId, out switchGearsetId))
 			{
@@ -340,7 +355,13 @@ public sealed class ClassUnlockRotationService : IDisposable
 			if (switchTargetId != 0 && keepCurrentClass)
 			{
 				log.Information($"[ClassUnlock] Keeping {character}'s previous combat job {anchor.ClassJobId} at level {currentClassLevel}; the configured switch limit is {keepCurrentThreshold}.");
-				await RestoreCombatAnchorAsync(character, anchor, token);
+				if (!(await RestoreCombatAnchorForContinuationAsync(character, anchor, token)))
+				{
+					resumeRotation = false;
+					throw new InvalidOperationException($"The previous level {currentClassLevel} combat job could not be restored; " + "the Stop Point rotation will not resume on the newly unlocked job.");
+				}
+				configuration.QuestRotationCombatJobByCharacter[character] = anchor.ClassJobId;
+				configuration.Save();
 			}
 			else if (switchTargetId != 0 && switchGearsetId >= 0)
 			{
@@ -351,7 +372,11 @@ public sealed class ClassUnlockRotationService : IDisposable
 				if (!(await WaitForClassJobAsync(switchTargetId, token)))
 				{
 					log.Warning($"[ClassUnlock] Could not switch to newly unlocked job {switchTargetId}; restoring combat anchor.");
-					await RestoreCombatAnchorAsync(character, anchor, token);
+					if (!(await RestoreCombatAnchorForContinuationAsync(character, anchor, token)))
+					{
+						resumeRotation = false;
+						throw new InvalidOperationException("Neither the selected continuation job nor the previous combat job could be restored; the Stop Point rotation will remain paused.");
+					}
 				}
 				else if ((await gearsetPersistence.PersistCurrentGearsetAsync("automatic Class Unlock continuation job", token)).Success)
 				{
@@ -365,7 +390,11 @@ public sealed class ClassUnlockRotationService : IDisposable
 				{
 					log.Warning($"[ClassUnlock] The manually selected continuation job {switchTargetId} has no usable gearset on {character}; restoring the combat anchor.");
 				}
-				await RestoreCombatAnchorAsync(character, anchor, token);
+				if (!(await RestoreCombatAnchorForContinuationAsync(character, anchor, token)))
+				{
+					resumeRotation = false;
+					throw new InvalidOperationException("The previous combat job could not be restored; the Stop Point rotation will not resume on an unintended job.");
+				}
 			}
 			SetState(ClassUnlockRunPhase.Completed, character, 0u, string.Empty, (results.Count == 0) ? "No selected Class Unlock target remained available." : "Automatic Class Unlock completed; resuming the same Stop Point rotation.", results, isRunning: false);
 		}
@@ -399,7 +428,7 @@ public sealed class ClassUnlockRotationService : IDisposable
 		}
 	}
 
-	private async Task<(bool Unlocked, int GearsetId)> RunAutomaticTargetAsync(string character, ClassUnlockTargetDefinition target, List<ClassUnlockTargetResult> results, CancellationToken token)
+	private async Task<(bool Unlocked, int GearsetId)> RunAutomaticTargetAsync(string character, ClassUnlockTargetDefinition target, bool createOrUpdateGearset, List<ClassUnlockTargetResult> results, CancellationToken token)
 	{
 		SetState(ClassUnlockRunPhase.CheckingTarget, character, target.ClassJobId, string.Empty, "Checking " + target.Name + "...", results);
 		if (ClassUnlockCatalog.GetLevel(await ReadLiveClassJobLevelsAsync(token), target) > 0)
@@ -431,6 +460,11 @@ public sealed class ClassUnlockRotationService : IDisposable
 			{
 				text = $"Quest {questId} completed, but the {target.Name} unlock could not be verified.";
 				continue;
+			}
+			if (!createOrUpdateGearset)
+			{
+				AddResult(character, target, ClassUnlockResultKind.Unlocked, "Unlocked; kept the previous combat job and skipped equipping the new job.", results);
+				return (Unlocked: true, GearsetId: -1);
 			}
 			int num = await EnsureUnlockedTargetGearsetAsync(target, levels, token);
 			AddResult(character, target, ClassUnlockResultKind.Unlocked, (num >= 0) ? $"Unlocked; gearset {num + 1} created or updated." : "Unlocked, but the new class/job could not be equipped for gearset creation.", results);
@@ -978,6 +1012,24 @@ public sealed class ClassUnlockRotationService : IDisposable
 		}
 		await framework.RunOnFrameworkThread(() => commandManager.ProcessCommand($"/gs change {anchor.GearsetId + 1}"));
 		return await WaitForClassJobAsync(anchor.ClassJobId, token);
+	}
+
+	private async Task<bool> RestoreCombatAnchorForContinuationAsync(string character, ClassUnlockAnchorGearset anchor, CancellationToken token)
+	{
+		for (int attempt = 1; attempt <= 3; attempt++)
+		{
+			if (await RestoreCombatAnchorAsync(character, anchor, token))
+			{
+				log.Information($"[ClassUnlock] Verified continuation job {anchor.ClassJobId} from gearset {anchor.GearsetId + 1} on attempt {attempt}/{3}.");
+				return true;
+			}
+			log.Warning($"[ClassUnlock] Failed to restore continuation gearset {anchor.GearsetId + 1} for job {anchor.ClassJobId} on attempt {attempt}/{3}.");
+			if (attempt < 3)
+			{
+				await Task.Delay(TimeSpan.FromSeconds(1L), token);
+			}
+		}
+		return false;
 	}
 
 	private async Task<bool> IsValidAnchorAsync(ClassUnlockAnchorGearset anchor, CancellationToken token)

@@ -34,7 +34,11 @@ public static class RetainerSetupLogic
 		{
 			if (snapshot.Status != XadbRetainerRosterStatus.Unknown)
 			{
-				return IsConfirmedEmptyOwner(contentId, snapshot);
+				if (snapshot.Status == XadbRetainerRosterStatus.ConfirmedZero || snapshot.Status == XadbRetainerRosterStatus.Populated)
+				{
+					return snapshot.OwnerContentId == contentId;
+				}
+				return false;
 			}
 			return true;
 		}
@@ -82,6 +86,8 @@ public static class RetainerSetupLogic
 			CharacterKey = (string.IsNullOrWhiteSpace(choice.CharacterKey) ? characterKey : choice.CharacterKey)
 		};
 		checkpoint.Retainers.Clear();
+		checkpoint.BaselineRetainers.Clear();
+		checkpoint.BaselineRosterCaptured = false;
 		checkpoint.ReservedNames.Clear();
 		checkpoint.LastVerifiedCheckpoint = RetainerStopAfter.ArrivedAtVocate;
 		checkpoint.PendingCheckpoint = null;

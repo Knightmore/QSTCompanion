@@ -15,6 +15,10 @@ public sealed class CharacterRetainerSetupCheckpoint
 
 	public CharacterRetainerSetupChoice LockedChoice { get; set; } = new CharacterRetainerSetupChoice();
 
+	public List<BaselineRetainerCheckpoint> BaselineRetainers { get; set; } = new List<BaselineRetainerCheckpoint>();
+
+	public bool BaselineRosterCaptured { get; set; }
+
 	public List<TrackedRetainerCheckpoint> Retainers { get; set; } = new List<TrackedRetainerCheckpoint>();
 
 	public List<string> ReservedNames { get; set; } = new List<string>();
@@ -142,6 +146,11 @@ public sealed class CharacterRetainerSetupCheckpoint
 		{
 			retainer.Normalize();
 		}
+		BaselineRetainers = (BaselineRetainers ?? new List<BaselineRetainerCheckpoint>()).Where((BaselineRetainerCheckpoint retainer) => retainer != null).ToList();
+		foreach (BaselineRetainerCheckpoint baselineRetainer in BaselineRetainers)
+		{
+			baselineRetainer.Normalize();
+		}
 		StarterGearSlots = (from slot in StarterGearSlots ?? new List<RetainerStarterGearSlotCheckpoint>()
 			where slot != null && slot.ItemId != 0 && slot.Slot >= 0
 			group slot by (ContainerType: slot.ContainerType, Slot: slot.Slot) into @group
@@ -150,6 +159,14 @@ public sealed class CharacterRetainerSetupCheckpoint
 			where x.RetainerId != 0L && !string.IsNullOrWhiteSpace(x.Name)
 			group x by x.RetainerId into x
 			select x.OrderByDescending((TrackedRetainerCheckpoint y) => y.CompletedWorkUnits).First()).ToList();
+		BaselineRetainers = (from x in BaselineRetainers
+			where x.RetainerId != 0L && !string.IsNullOrWhiteSpace(x.Name)
+			group x by x.RetainerId into x
+			select x.First()).ToList();
+		if (BaselineRetainers.Count > 0)
+		{
+			BaselineRosterCaptured = true;
+		}
 		ReservedNames = (from x in ReservedNames ?? new List<string>()
 			where !string.IsNullOrWhiteSpace(x)
 			select x.Trim()).Distinct<string>(StringComparer.OrdinalIgnoreCase).ToList();

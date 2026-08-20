@@ -217,7 +217,8 @@ internal sealed class AutoRetainerReflectionBridge
 		{
 			return false;
 		}
-		if (!TryReadOwner(fields.OfflineData.GetValue(config), request.ContentId, request.CharacterKey, request.Retainers, out ReflectedOwner owner, out error) || owner == null)
+		AutoRetainerExpectedRetainer[] expectedRetainers = request.BaselineRetainers.Concat(request.Retainers).ToArray();
+		if (!TryReadOwner(fields.OfflineData.GetValue(config), request.ContentId, request.CharacterKey, expectedRetainers, out ReflectedOwner owner, out error) || owner == null)
 		{
 			return false;
 		}
@@ -729,7 +730,7 @@ internal sealed class AutoRetainerReflectionBridge
 
 	private static bool ValidateRequest(AutoRetainerReflectionRequest request, out string error)
 	{
-		if (request.ContentId == 0L || string.IsNullOrWhiteSpace(request.CharacterKey) || request.CharacterKey.LastIndexOf('@') <= 0 || request.Retainers == null || request.Retainers.Count == 0 || request.Retainers.Any((AutoRetainerExpectedRetainer x) => x.RetainerId == 0L || string.IsNullOrWhiteSpace(x.Name)) || request.Retainers.Select((AutoRetainerExpectedRetainer x) => x.RetainerId).Distinct().Count() != request.Retainers.Count || request.Retainers.Select((AutoRetainerExpectedRetainer x) => x.Name).Distinct<string>(StringComparer.OrdinalIgnoreCase).Count() != request.Retainers.Count)
+		if (request.ContentId == 0L || string.IsNullOrWhiteSpace(request.CharacterKey) || request.CharacterKey.LastIndexOf('@') <= 0 || request.Retainers == null || request.Retainers.Count == 0 || request.BaselineRetainers == null || request.Retainers.Any((AutoRetainerExpectedRetainer x) => x.RetainerId == 0L || string.IsNullOrWhiteSpace(x.Name)) || request.BaselineRetainers.Any((AutoRetainerExpectedRetainer x) => x.RetainerId == 0L || string.IsNullOrWhiteSpace(x.Name)) || request.Retainers.Select((AutoRetainerExpectedRetainer x) => x.RetainerId).Distinct().Count() != request.Retainers.Count || request.Retainers.Select((AutoRetainerExpectedRetainer x) => x.Name).Distinct<string>(StringComparer.OrdinalIgnoreCase).Count() != request.Retainers.Count || request.BaselineRetainers.Select((AutoRetainerExpectedRetainer x) => x.RetainerId).Distinct().Count() != request.BaselineRetainers.Count || request.BaselineRetainers.Select((AutoRetainerExpectedRetainer x) => x.Name).Distinct<string>(StringComparer.OrdinalIgnoreCase).Count() != request.BaselineRetainers.Count || request.Retainers.Select((AutoRetainerExpectedRetainer x) => x.RetainerId).Intersect(request.BaselineRetainers.Select((AutoRetainerExpectedRetainer x) => x.RetainerId)).Any() || request.Retainers.Select((AutoRetainerExpectedRetainer x) => x.Name).Intersect<string>(request.BaselineRetainers.Select((AutoRetainerExpectedRetainer x) => x.Name), StringComparer.OrdinalIgnoreCase).Any())
 		{
 			error = "The reflected AutoRetainer request contains invalid or duplicate owner/retainer identity data.";
 			return false;
